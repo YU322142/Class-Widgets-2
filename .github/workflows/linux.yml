@@ -126,7 +126,8 @@ jobs:
       - name: ⬇️ Checkout code
         uses: actions/checkout@v5
 
-      - name: 🐍 Set up Python
+      - name: 🐍 Set up Python 3.11
+        id: py
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -142,17 +143,23 @@ jobs:
           restore-keys: |
             uv-linux-glibc228-${{ github.workflow }}-
 
-      - name: 📦 Install dependencies
+      - name: 📦 Install dependencies (force Python 3.11)
         shell: bash
+        env:
+          UV_PYTHON_DOWNLOADS: never
         run: |
-          ldd --version | head -n 1
-          uv sync
-          uv pip install pyinstaller
+          ldd --version | head -n1
+          "${{ steps.py.outputs.python-path }}" -V
+
+          uv sync --python "${{ steps.py.outputs.python-path }}"
+          uv pip install --python .venv/bin/python pyinstaller
 
       - name: 🔨 Build ClassWidgets-2 (Linux x86_64 glibc2.28)
         shell: bash
+        env:
+          UV_PYTHON_DOWNLOADS: never
         run: |
-          uv run pyinstaller --noconsole \
+          uv run --python .venv/bin/python pyinstaller --noconsole \
             --add-data "src/qml:src/qml" \
             --add-data "src/plugins:src/plugins" \
             --add-data "src/themes:src/themes" \
@@ -162,6 +169,55 @@ jobs:
             --contents-directory . \
             --name="Class Widgets 2" \
             src/app.py
+
+      - name: 🔎 Check GLIBC symbol compatibility (<= 2.28)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET="2.28"
+          APP_DIR="dist/Class Widgets 2"
+
+          if [ ! -d "$APP_DIR" ]; then
+            echo "ERROR: Build output not found: $APP_DIR"
+            exit 1
+          fi
+
+          mapfile -d '' ELF_FILES < <(find "$APP_DIR" -type f -print0 | xargs -0 file | awk -F: '/ELF/{print $1}' | tr '\n' '\0')
+
+          if [ "${#ELF_FILES[@]}" -eq 0 ]; then
+            echo "No ELF files found under $APP_DIR, skip GLIBC check."
+            exit 0
+          fi
+
+          echo "Found ${#ELF_FILES[@]} ELF files. Checking GLIBC_* symbol versions..."
+
+          OVER_LIMIT=0
+          GLOBAL_MAX="0"
+
+          for f in "${ELF_FILES[@]}"; do
+            VERS=$(readelf --version-info "$f" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' | sort -Vu || true)
+            [ -z "$VERS" ] && continue
+
+            FILE_MAX=$(echo "$VERS" | tail -n1)
+
+            if [ "$(printf '%s\n%s\n' "$GLOBAL_MAX" "$FILE_MAX" | sort -V | tail -n1)" = "$FILE_MAX" ]; then
+              GLOBAL_MAX="$FILE_MAX"
+            fi
+
+            if [ "$(printf '%s\n%s\n' "$TARGET" "$FILE_MAX" | sort -V | tail -n1)" != "$TARGET" ]; then
+              echo "❌ $f requires GLIBC_$FILE_MAX (target <= GLIBC_$TARGET)"
+              OVER_LIMIT=1
+            fi
+          done
+
+          echo "Highest detected GLIBC symbol version: GLIBC_$GLOBAL_MAX"
+          if [ "$OVER_LIMIT" -ne 0 ]; then
+            echo "GLIBC compatibility check failed."
+            exit 1
+          fi
+
+          echo "✅ GLIBC compatibility check passed (<= GLIBC_$TARGET)."
 
       - name: 📦 Pack build (Linux x86_64)
         shell: bash
