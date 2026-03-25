@@ -32,11 +32,11 @@ jobs:
           restore-keys: |
             uv-linux-glibc228-${{ github.workflow }}-
 
-      - name: 🐍 Select container Python (cp311)
+      - name: 🐍 Select container Python (cp312)
         id: py
         shell: bash
         run: |
-          PY="/opt/python/cp311-cp311/bin/python"
+          PY="/opt/python/cp312-cp312/bin/python"
           test -x "$PY"
           echo "python_path=$PY" >> "$GITHUB_OUTPUT"
 
