@@ -100,7 +100,6 @@ jobs:
         shell: bash
         run: |
           hdiutil create -volname "Class Widgets 2" -srcfolder dist -ov -format UDZO ClassWidgets-2-macOS-${{ runner.arch }}.dmg
-        # ditto -c -k --sequesterRsrc --keepParent "Class Widgets 2".app ClassWidgets-2-macOS-${{ runner.arch }}.zip
 
       - name: ☁️ Upload artifact (Windows)
         if: runner.os == 'Windows'
@@ -148,7 +147,7 @@ jobs:
         env:
           UV_PYTHON_DOWNLOADS: never
         run: |
-          ldd --version | head -n1
+          ldd --version | sed -n '1p'
           "${{ steps.py.outputs.python-path }}" -V
 
           uv sync --python "${{ steps.py.outputs.python-path }}"
@@ -183,7 +182,12 @@ jobs:
             exit 1
           fi
 
-          mapfile -d '' ELF_FILES < <(find "$APP_DIR" -type f -print0 | xargs -0 file | awk -F: '/ELF/{print $1}' | tr '\n' '\0')
+          mapfile -d '' ELF_FILES < <(
+            find "$APP_DIR" -type f -print0 \
+            | xargs -0 file \
+            | awk -F: '/ELF/{print $1}' \
+            | tr '\n' '\0'
+          )
 
           if [ "${#ELF_FILES[@]}" -eq 0 ]; then
             echo "No ELF files found under $APP_DIR, skip GLIBC check."
@@ -196,9 +200,14 @@ jobs:
           GLOBAL_MAX="0"
 
           for f in "${ELF_FILES[@]}"; do
-            VERS=$(readelf --version-info "$f" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' | sort -Vu || true)
-            [ -z "$VERS" ] && continue
+            VERS=$(
+              readelf --version-info "$f" 2>/dev/null \
+              | grep -oE 'GLIBC_[0-9]+\.[0-9]+' \
+              | sed 's/GLIBC_//' \
+              | sort -Vu || true
+            )
 
+            [ -z "$VERS" ] && continue
             FILE_MAX=$(echo "$VERS" | tail -n1)
 
             if [ "$(printf '%s\n%s\n' "$GLOBAL_MAX" "$FILE_MAX" | sort -V | tail -n1)" = "$FILE_MAX" ]; then
@@ -212,6 +221,7 @@ jobs:
           done
 
           echo "Highest detected GLIBC symbol version: GLIBC_$GLOBAL_MAX"
+
           if [ "$OVER_LIMIT" -ne 0 ]; then
             echo "GLIBC compatibility check failed."
             exit 1
@@ -272,8 +282,8 @@ jobs:
       - name: 📤 Upload CHANGELOG & packages to 123Pan
         if: success() &&
           ( github.event_name == 'push' ||
-           github.event.inputs.upload2webdav == '123Pan' ||
-           github.event.inputs.upload2webdav == 'Both')
+            github.event.inputs.upload2webdav == '123Pan' ||
+            github.event.inputs.upload2webdav == 'Both')
         run: |
           VERSION="${{ github.ref_name }}"
           ENCODED_VERSION=$(echo "$VERSION" | sed 's/ /%20/g')
@@ -313,8 +323,8 @@ jobs:
       - name: 📤 Upload CHANGELOG & packages to OneDrive
         if: success() &&
           (github.event_name == 'push' ||
-          github.event.inputs.upload2webdav == 'OneDrive' ||
-          github.event.inputs.upload2webdav == 'Both')
+           github.event.inputs.upload2webdav == 'OneDrive' ||
+           github.event.inputs.upload2webdav == 'Both')
         run: |
           VERSION="${{ github.ref_name }}"
           ENCODED_VERSION=$(echo "$VERSION" | sed 's/ /%20/g')
