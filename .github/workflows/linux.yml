@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       upload2webdav:
-        description: 'Upload to...'
+        description: "Upload to..."
         required: true
-        default: 'None'
+        default: "None"
         type: choice
         options:
           - None
@@ -17,12 +17,12 @@ on:
           - OneDrive
           - Both
       release:
-        description: 'Create GitHub Release'
+        description: "Create GitHub Release"
         required: true
         default: false
         type: boolean
       prerelease:
-        description: 'Mark as Pre-release'
+        description: "Mark as Pre-release"
         required: false
         default: true
         type: boolean
@@ -35,7 +35,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-latest, macos-15-intel, macos-latest, ubuntu-latest]
+        os: [windows-latest, macos-15-intel, macos-latest]
 
     steps:
       - name: ⬇️ Checkout code
@@ -89,21 +89,6 @@ jobs:
             --name="Class Widgets 2" \
             src/app.py
 
-      - name: 🔨 Build ClassWidgets-2 (Linux x86_64)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          uv run pyinstaller --noconsole \
-            --add-data "src/qml:src/qml" \
-            --add-data "src/plugins:src/plugins" \
-            --add-data "src/themes:src/themes" \
-            --add-data "assets:assets" \
-            --add-data "LICENSE:." \
-            --paths=. \
-            --contents-directory . \
-            --name="Class Widgets 2" \
-            src/app.py
-
       - name: 📦 Zip build (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -116,12 +101,6 @@ jobs:
         run: |
           hdiutil create -volname "Class Widgets 2" -srcfolder dist -ov -format UDZO ClassWidgets-2-macOS-${{ runner.arch }}.dmg
         # ditto -c -k --sequesterRsrc --keepParent "Class Widgets 2".app ClassWidgets-2-macOS-${{ runner.arch }}.zip
-
-      - name: 📦 Pack build (Linux x86_64)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          tar -C dist -czf dist/ClassWidgets-2-Linux-X64.tar.gz "Class Widgets 2"
 
       - name: ☁️ Upload artifact (Windows)
         if: runner.os == 'Windows'
@@ -137,15 +116,66 @@ jobs:
           name: ClassWidgets-2-macOS-${{ runner.arch }}
           path: ClassWidgets-2-macOS-${{ runner.arch }}.dmg
 
+  build-linux-glibc228:
+    name: Build Linux (glibc 2.28)
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64
+
+    steps:
+      - name: ⬇️ Checkout code
+        uses: actions/checkout@v5
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: 📦 Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-linux-glibc228-${{ github.workflow }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-linux-glibc228-${{ github.workflow }}-
+
+      - name: 📦 Install dependencies
+        shell: bash
+        run: |
+          ldd --version | head -n 1
+          uv sync
+          uv pip install pyinstaller
+
+      - name: 🔨 Build ClassWidgets-2 (Linux x86_64 glibc2.28)
+        shell: bash
+        run: |
+          uv run pyinstaller --noconsole \
+            --add-data "src/qml:src/qml" \
+            --add-data "src/plugins:src/plugins" \
+            --add-data "src/themes:src/themes" \
+            --add-data "assets:assets" \
+            --add-data "LICENSE:." \
+            --paths=. \
+            --contents-directory . \
+            --name="Class Widgets 2" \
+            src/app.py
+
+      - name: 📦 Pack build (Linux x86_64)
+        shell: bash
+        run: |
+          tar -C dist -czf dist/ClassWidgets-2-Linux-X64.tar.gz "Class Widgets 2"
+
       - name: ☁️ Upload artifact (Linux x86_64)
-        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: ClassWidgets-2-Linux-X64
           path: dist/ClassWidgets-2-Linux-X64.tar.gz
 
   release:
-    needs: [build]
+    needs: [build, build-linux-glibc228]
     runs-on: ubuntu-latest
 
     steps:
@@ -169,7 +199,7 @@ jobs:
 
       - name: 🚀 Create GitHub Release
         uses: softprops/action-gh-release@v2
-        if: ${{  github.event_name == 'push' || github.event.inputs.release == 'true' }}
+        if: ${{ github.event_name == 'push' || github.event.inputs.release == 'true' }}
         with:
           name: Class Widgets ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
