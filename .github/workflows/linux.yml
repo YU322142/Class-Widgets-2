@@ -1,122 +1,18 @@
-name: Build & Release ClassWidgets-2
+name: Build Linux (glibc 2.28)
 
 on:
   push:
+    branches: [main]
     tags:
       - "*"
   workflow_dispatch:
-    inputs:
-      upload2webdav:
-        description: "Upload to..."
-        required: true
-        default: "None"
-        type: choice
-        options:
-          - None
-          - 123Pan
-          - OneDrive
-          - Both
-      release:
-        description: "Create GitHub Release"
-        required: true
-        default: false
-        type: boolean
-      prerelease:
-        description: "Mark as Pre-release"
-        required: false
-        default: true
-        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [windows-latest, macos-15-intel, macos-latest]
-
-    steps:
-      - name: ⬇️ Checkout code
-        uses: actions/checkout@v5
-
-      - name: 📦 Set up Python & Install uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: 📦 Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ github.workflow }}-${{ hashFiles('uv.lock') }}
-          restore-keys: |
-            uv-${{ runner.os }}-${{ github.workflow }}-
-
-      - name: 📦 Install dependencies
-        run: |
-          uv sync
-          uv pip install pyinstaller
-
-      - name: 🔨 Build ClassWidgets-2 (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          uv run pyinstaller --noconsole \
-            --icon "assets/images/logo.ico" \
-            --add-data "src/qml:src/qml" \
-            --add-data "src/plugins:src/plugins" \
-            --add-data "src/themes:src/themes" \
-            --add-data "assets:assets" \
-            --add-data "LICENSE:." \
-            --paths=. \
-            --contents-directory . \
-            --name="Class Widgets 2" \
-            src/app.py
-
-      - name: 🔨 Build ClassWidgets-2 (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          uv run pyinstaller --noconsole \
-            --icon "assets/images/logo.icns" \
-            --add-data "src/qml:src/qml" \
-            --add-data "src/plugins:src/plugins" \
-            --add-data "src/themes:src/themes" \
-            --add-data "assets:assets" \
-            --add-data "LICENSE:." \
-            --paths=. \
-            --contents-directory . \
-            --name="Class Widgets 2" \
-            src/app.py
-
-      - name: 📦 Zip build (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "dist/Class Widgets 2/*" -DestinationPath "dist/ClassWidgets-2-Windows.zip"
-
-      - name: 📦 Zip build (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          hdiutil create -volname "Class Widgets 2" -srcfolder dist -ov -format UDZO ClassWidgets-2-macOS-${{ runner.arch }}.dmg
-
-      - name: ☁️ Upload artifact (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ClassWidgets-2-Windows
-          path: dist/ClassWidgets-2-Windows.zip
-
-      - name: ☁️ Upload artifact (macOS)
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ClassWidgets-2-macOS-${{ runner.arch }}
-          path: ClassWidgets-2-macOS-${{ runner.arch }}.dmg
-
   build-linux-glibc228:
-    name: Build Linux (glibc 2.28)
+    name: Build Linux x86_64 (glibc 2.28)
     runs-on: ubuntu-latest
     container:
       image: quay.io/pypa/manylinux_2_28_x86_64
@@ -124,12 +20,6 @@ jobs:
     steps:
       - name: ⬇️ Checkout code
         uses: actions/checkout@v5
-
-      - name: 🐍 Set up Python 3.11
-        id: py
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: 📦 Set up uv
         uses: astral-sh/setup-uv@v6
@@ -142,18 +32,30 @@ jobs:
           restore-keys: |
             uv-linux-glibc228-${{ github.workflow }}-
 
-      - name: 📦 Install dependencies (force Python 3.11)
+      - name: 🐍 Select container Python (cp311)
+        id: py
+        shell: bash
+        run: |
+          PY="/opt/python/cp311-cp311/bin/python"
+          test -x "$PY"
+          echo "python_path=$PY" >> "$GITHUB_OUTPUT"
+
+      - name: 📦 Install dependencies
         shell: bash
         env:
           UV_PYTHON_DOWNLOADS: never
         run: |
           ldd --version | sed -n '1p'
-          "${{ steps.py.outputs.python-path }}" -V
+          "${{ steps.py.outputs.python_path }}" -V
+          "${{ steps.py.outputs.python_path }}" - <<'PY'
+          import sysconfig
+          print("Py_ENABLE_SHARED =", sysconfig.get_config_var("Py_ENABLE_SHARED"))
+          PY
 
-          uv sync --python "${{ steps.py.outputs.python-path }}"
+          uv sync --python "${{ steps.py.outputs.python_path }}"
           uv pip install --python .venv/bin/python pyinstaller
 
-      - name: 🔨 Build ClassWidgets-2 (Linux x86_64 glibc2.28)
+      - name: 🔨 Build ClassWidgets-2 (Linux)
         shell: bash
         env:
           UV_PYTHON_DOWNLOADS: never
@@ -194,8 +96,6 @@ jobs:
             exit 0
           fi
 
-          echo "Found ${#ELF_FILES[@]} ELF files. Checking GLIBC_* symbol versions..."
-
           OVER_LIMIT=0
           GLOBAL_MAX="0"
 
@@ -229,123 +129,13 @@ jobs:
 
           echo "✅ GLIBC compatibility check passed (<= GLIBC_$TARGET)."
 
-      - name: 📦 Pack build (Linux x86_64)
+      - name: 📦 Pack build
         shell: bash
         run: |
           tar -C dist -czf dist/ClassWidgets-2-Linux-X64.tar.gz "Class Widgets 2"
 
-      - name: ☁️ Upload artifact (Linux x86_64)
+      - name: ☁️ Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ClassWidgets-2-Linux-X64
           path: dist/ClassWidgets-2-Linux-X64.tar.gz
-
-  release:
-    needs: [build, build-linux-glibc228]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: ⬇️ Checkout code
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: ⬇️ Download artifacts
-        uses: actions/download-artifact@v5
-        with:
-          path: dist/
-          merge-multiple: true
-
-      - name: 🧱 Set up git-cliff
-        uses: kenji-miyake/setup-git-cliff@v2
-
-      - name: 📜 Generate CHANGELOG.md
-        run: |
-          git cliff --latest --tag "${{ github.ref_name }}" --config .git-cliff.toml > CHANGELOG.md
-
-      - name: 🚀 Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: ${{ github.event_name == 'push' || github.event.inputs.release == 'true' }}
-        with:
-          name: Class Widgets ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          body_path: CHANGELOG.md
-          prerelease: ${{ github.event_name == 'push' || github.event.inputs.prerelease }}
-          files: |
-            dist/ClassWidgets-2-Windows.zip
-            dist/ClassWidgets-2-macOS-X64.dmg
-            dist/ClassWidgets-2-macOS-ARM64.dmg
-            dist/ClassWidgets-2-Linux-X64.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 📤 Upload CHANGELOG & packages to 123Pan
-        if: success() &&
-          ( github.event_name == 'push' ||
-            github.event.inputs.upload2webdav == '123Pan' ||
-            github.event.inputs.upload2webdav == 'Both')
-        run: |
-          VERSION="${{ github.ref_name }}"
-          ENCODED_VERSION=$(echo "$VERSION" | sed 's/ /%20/g')
-
-          curl -v -u "${{ secrets.PAN_USER }}:${{ secrets.PAN_PASS }}" \
-               -X MKCOL "https://webdav.123pan.cn/webdav/${ENCODED_VERSION}"
-
-          curl -u "${{ secrets.PAN_USER }}:${{ secrets.PAN_PASS }}" \
-            -T "CHANGELOG.md" \
-            "https://webdav.123pan.cn/webdav/${ENCODED_VERSION}/CHANGELOG.md"
-
-          curl -u "${{ secrets.PAN_USER }}:${{ secrets.PAN_PASS }}" \
-            -T "dist/ClassWidgets-2-Windows.zip" \
-            "https://webdav.123pan.cn/webdav/${ENCODED_VERSION}/ClassWidgets-2-Windows.zip"
-
-          curl -u "${{ secrets.PAN_USER }}:${{ secrets.PAN_PASS }}" \
-            -T "dist/ClassWidgets-2-macOS-X64.dmg" \
-            "https://webdav.123pan.cn/webdav/${ENCODED_VERSION}/ClassWidgets-2-macOS-X64.dmg"
-          curl -u "${{ secrets.PAN_USER }}:${{ secrets.PAN_PASS }}" \
-            -T "dist/ClassWidgets-2-macOS-ARM64.dmg" \
-            "https://webdav.123pan.cn/webdav/${ENCODED_VERSION}/ClassWidgets-2-macOS-ARM64.dmg"
-          curl -u "${{ secrets.PAN_USER }}:${{ secrets.PAN_PASS }}" \
-            -T "dist/ClassWidgets-2-Linux-X64.tar.gz" \
-            "https://webdav.123pan.cn/webdav/${ENCODED_VERSION}/ClassWidgets-2-Linux-X64.tar.gz"
-
-      - name: 🔔 Trigger Official Website Update
-        if: success()
-        run: |
-          curl -L \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.ORG_DISPATCH_TOKEN }}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/Class-Widgets/official_website/dispatches \
-            -d '{"event_type": "update-version"}'
-
-      - name: 📤 Upload CHANGELOG & packages to OneDrive
-        if: success() &&
-          (github.event_name == 'push' ||
-           github.event.inputs.upload2webdav == 'OneDrive' ||
-           github.event.inputs.upload2webdav == 'Both')
-        run: |
-          VERSION="${{ github.ref_name }}"
-          ENCODED_VERSION=$(echo "$VERSION" | sed 's/ /%20/g')
-
-          curl -v -u "${{ secrets.ONEDRIVE_USER }}:${{ secrets.ONEDRIVE_PASS }}" \
-               -X MKCOL "https://app.koofr.net/dav/1Drv/Class-Widgets/${ENCODED_VERSION}"
-
-          curl -u "${{ secrets.ONEDRIVE_USER }}:${{ secrets.ONEDRIVE_PASS }}" \
-            -T "CHANGELOG.md" \
-            "https://app.koofr.net/dav/1Drv/Class-Widgets/${ENCODED_VERSION}/CHANGELOG.md"
-
-          curl -u "${{ secrets.ONEDRIVE_USER }}:${{ secrets.ONEDRIVE_PASS }}" \
-            -T "dist/ClassWidgets-2-Windows.zip" \
-            "https://app.koofr.net/dav/1Drv/Class-Widgets/${ENCODED_VERSION}/ClassWidgets-2-Windows.zip"
-
-          curl -u "${{ secrets.ONEDRIVE_USER }}:${{ secrets.ONEDRIVE_PASS }}" \
-            -T "dist/ClassWidgets-2-macOS-X64.dmg" \
-            "https://app.koofr.net/dav/1Drv/Class-Widgets/${ENCODED_VERSION}/ClassWidgets-2-macOS-X64.dmg"
-          curl -u "${{ secrets.ONEDRIVE_USER }}:${{ secrets.ONEDRIVE_PASS }}" \
-            -T "dist/ClassWidgets-2-macOS-ARM64.dmg" \
-            "https://app.koofr.net/dav/1Drv/Class-Widgets/${ENCODED_VERSION}/ClassWidgets-2-macOS-ARM64.dmg"
-          curl -u "${{ secrets.ONEDRIVE_USER }}:${{ secrets.ONEDRIVE_PASS }}" \
-            -T "dist/ClassWidgets-2-Linux-X64.tar.gz" \
-            "https://app.koofr.net/dav/1Drv/Class-Widgets/${ENCODED_VERSION}/ClassWidgets-2-Linux-X64.tar.gz"
