@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build-linux-glibc228:
-    name: Build Linux x86_64 (glibc 2.28)
+    name: Build Linux x86_64 (glibc 2.28 + shared Python)
     runs-on: ubuntu-latest
     container:
       image: quay.io/pypa/manylinux_2_28_x86_64
@@ -32,26 +32,64 @@ jobs:
           restore-keys: |
             uv-linux-glibc228-${{ github.workflow }}-
 
-      - name: 🐍 Select container Python (cp312)
+      - name: 🧰 Install build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          yum install -y \
+            gcc make wget tar xz \
+            openssl-devel bzip2-devel libffi-devel zlib-devel \
+            xz-devel sqlite-devel readline-devel ncurses-devel \
+            gdbm-devel expat-devel libuuid-devel \
+            file binutils
+
+      - name: 🐍 Build shared Python 3.12
         id: py
         shell: bash
         run: |
-          PY="/opt/python/cp312-cp312/bin/python"
-          test -x "$PY"
-          echo "python_path=$PY" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          PY_VER="3.12.13"
+          PREFIX="/opt/python-shared/${PY_VER}"
+          PYBIN="${PREFIX}/bin/python3.12"
+
+          if [ ! -x "$PYBIN" ]; then
+            cd /tmp
+            wget -q "https://www.python.org/ftp/python/${PY_VER}/Python-${PY_VER}.tgz"
+            tar -xf "Python-${PY_VER}.tgz"
+            cd "Python-${PY_VER}"
+
+            ./configure \
+              --prefix="${PREFIX}" \
+              --enable-shared \
+              --with-ensurepip=install
+
+            make -j"$(nproc)"
+            make install
+          fi
+
+          echo "python_path=$PYBIN" >> "$GITHUB_OUTPUT"
+          echo "${PREFIX}/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=${PREFIX}/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: ✅ Verify glibc + Python(shared)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ldd --version | sed -n '1p'
+          "${{ steps.py.outputs.python_path }}" -V
+          "${{ steps.py.outputs.python_path }}" - <<'PY'
+          import sysconfig
+          print("Py_ENABLE_SHARED =", sysconfig.get_config_var("Py_ENABLE_SHARED"))
+          assert sysconfig.get_config_var("Py_ENABLE_SHARED") == 1
+          PY
 
       - name: 📦 Install dependencies
         shell: bash
         env:
           UV_PYTHON_DOWNLOADS: never
         run: |
-          ldd --version | sed -n '1p'
-          "${{ steps.py.outputs.python_path }}" -V
-          "${{ steps.py.outputs.python_path }}" - <<'PY'
-          import sysconfig
-          print("Py_ENABLE_SHARED =", sysconfig.get_config_var("Py_ENABLE_SHARED"))
-          PY
-
+          set -euo pipefail
           uv sync --python "${{ steps.py.outputs.python_path }}"
           uv pip install --python .venv/bin/python pyinstaller
 
@@ -60,6 +98,7 @@ jobs:
         env:
           UV_PYTHON_DOWNLOADS: never
         run: |
+          set -euo pipefail
           uv run --python .venv/bin/python pyinstaller --noconsole \
             --add-data "src/qml:src/qml" \
             --add-data "src/plugins:src/plugins" \
@@ -79,10 +118,7 @@ jobs:
           TARGET="2.28"
           APP_DIR="dist/Class Widgets 2"
 
-          if [ ! -d "$APP_DIR" ]; then
-            echo "ERROR: Build output not found: $APP_DIR"
-            exit 1
-          fi
+          [ -d "$APP_DIR" ] || { echo "ERROR: $APP_DIR not found"; exit 1; }
 
           mapfile -d '' ELF_FILES < <(
             find "$APP_DIR" -type f -print0 \
@@ -92,12 +128,12 @@ jobs:
           )
 
           if [ "${#ELF_FILES[@]}" -eq 0 ]; then
-            echo "No ELF files found under $APP_DIR, skip GLIBC check."
+            echo "No ELF files found, skip."
             exit 0
           fi
 
-          OVER_LIMIT=0
-          GLOBAL_MAX="0"
+          OVER=0
+          MAXV="0"
 
           for f in "${ELF_FILES[@]}"; do
             VERS=$(
@@ -106,28 +142,20 @@ jobs:
               | sed 's/GLIBC_//' \
               | sort -Vu || true
             )
-
             [ -z "$VERS" ] && continue
-            FILE_MAX=$(echo "$VERS" | tail -n1)
+            FV=$(echo "$VERS" | tail -n1)
 
-            if [ "$(printf '%s\n%s\n' "$GLOBAL_MAX" "$FILE_MAX" | sort -V | tail -n1)" = "$FILE_MAX" ]; then
-              GLOBAL_MAX="$FILE_MAX"
-            fi
+            [ "$(printf '%s\n%s\n' "$MAXV" "$FV" | sort -V | tail -n1)" = "$FV" ] && MAXV="$FV"
 
-            if [ "$(printf '%s\n%s\n' "$TARGET" "$FILE_MAX" | sort -V | tail -n1)" != "$TARGET" ]; then
-              echo "❌ $f requires GLIBC_$FILE_MAX (target <= GLIBC_$TARGET)"
-              OVER_LIMIT=1
+            if [ "$(printf '%s\n%s\n' "$TARGET" "$FV" | sort -V | tail -n1)" != "$TARGET" ]; then
+              echo "❌ $f requires GLIBC_$FV (target <= GLIBC_$TARGET)"
+              OVER=1
             fi
           done
 
-          echo "Highest detected GLIBC symbol version: GLIBC_$GLOBAL_MAX"
-
-          if [ "$OVER_LIMIT" -ne 0 ]; then
-            echo "GLIBC compatibility check failed."
-            exit 1
-          fi
-
-          echo "✅ GLIBC compatibility check passed (<= GLIBC_$TARGET)."
+          echo "Highest detected GLIBC symbol version: GLIBC_$MAXV"
+          [ "$OVER" -eq 0 ] || { echo "GLIBC check failed."; exit 1; }
+          echo "✅ GLIBC compatibility check passed."
 
       - name: 📦 Pack build
         shell: bash
